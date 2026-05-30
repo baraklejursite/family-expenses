@@ -11,7 +11,10 @@ from parser import parse_receipt, answer_query
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")  # e.g. https://your-app.railway.app
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+ALLOWED_USER_IDS = set(
+    int(x) for x in os.getenv("ALLOWED_USER_IDS", "").split(",") if x.strip()
+)  # e.g. https://your-app.railway.app
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
@@ -52,6 +55,10 @@ async def webhook(request: Request):
     message = data.get("message", {})
     chat_id = message.get("chat", {}).get("id")
     if not chat_id:
+        return {"ok": True}
+
+    user_id = message.get("from", {}).get("id")
+    if ALLOWED_USER_IDS and user_id not in ALLOWED_USER_IDS:
         return {"ok": True}
 
     if "photo" in message:
