@@ -1,4 +1,5 @@
 import os
+import re
 import httpx
 from datetime import datetime
 from fastapi import FastAPI, Request, HTTPException
@@ -8,6 +9,33 @@ from contextlib import asynccontextmanager
 
 from database import init_db, save_receipt, get_monthly_summary, get_all_months_summary, get_recent_receipts, get_receipt_items, get_category_summary_year
 from parser import parse_receipt, answer_query
+
+CATEGORIES = ["Alimentari", "Bevande", "Latticini", "Carne/Pesce", "Frutta/Verdura", "Pulizia", "Igiene", "Altro"]
+
+
+def parse_manual_expense(text: str) -> dict | None:
+    """Parse /spesa <importo> [categoria] [descrizione]"""
+    parts = text[len("/spesa"):].strip().split(None, 2)
+    if not parts:
+        return None
+    try:
+        amount = float(parts[0].replace(",", ".").replace("€", ""))
+    except ValueError:
+        return None
+
+    category = "Altro"
+    description = "Spesa manuale"
+
+    if len(parts) >= 2:
+        candidate = parts[1]
+        matched = next((c for c in CATEGORIES if c.lower() == candidate.lower()), None)
+        if matched:
+            category = matched
+            description = parts[2].strip() if len(parts) >= 3 else "Spesa manuale"
+        else:
+            description = " ".join(parts[1:]).strip()
+
+    return {"amount": amount, "category": category, "description": description}
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -98,11 +126,51 @@ async def webhook(request: Request):
                 chat_id,
                 "👋 <b>Benvenuto nel bot delle spese familiari!</b>\n\n"
                 "📸 Inviami la foto di uno scontrino e lo analizzo automaticamente.\n\n"
-                "💬 Oppure chiedimi:\n"
+                "✏️ <b>Oppure inserisci una spesa manualmente:</b>\n"
+                "<code>/spesa 15.50 Alimentari pane e latte</code>\n"
+                "<code>/spesa 8.00 Altro</code>\n"
+                "<code>/spesa 4.50</code>\n\n"
+                f"📂 Categorie: {', '.join(CATEGORIES)}\n\n"
+                "💬 <b>Oppure chiedimi:</b>\n"
                 "• <i>Quanto ho speso questo mese?</i>\n"
                 "• <i>Quanto ho speso questa settimana?</i>\n"
                 "• <i>Mostrami le spese di maggio</i>\n"
                 "• <i>Quanto ho speso in alimentari?</i>",
+            )
+            return {"ok": True}
+
+        if text.startswith("/spesa"):
+            expense = parse_manual_expense(text)
+            if not expense:
+                await send_message(
+                    chat_id,
+                    "❌ Formato non valido. Usa:\n"
+                    "<code>/spesa 15.50 Alimentari descrizione opzionale</code>\n\n"
+                    f"Categorie disponibili: {', '.join(CATEGORIES)}",
+                )
+                return {"ok": True}
+            today = datetime.now().strftime("%Y-%m-%d")
+            receipt_id = save_receipt(
+                store=expense["description"],
+                date=today,
+                total=expense["amount"],
+                items=[{
+                    "name": expense["description"],
+                    "quantity": 1,
+                    "unit_price": expense["amount"],
+                    "total_price": expense["amount"],
+                    "category": expense["category"],
+                }],
+                chat_id=chat_id,
+            )
+            await send_message(
+                chat_id,
+                f"✅ <b>Spesa salvata!</b>\n\n"
+                f"📝 <b>Descrizione:</b> {expense['description']}\n"
+                f"📂 <b>Categoria:</b> {expense['category']}\n"
+                f"💰 <b>Importo:</b> €{expense['amount']:.2f}\n"
+                f"📅 <b>Data:</b> {today}\n\n"
+                f"ID: #{receipt_id}",
             )
             return {"ok": True}
 
